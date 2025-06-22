@@ -17,24 +17,35 @@ except redis.ConnectionError as e:
     kanji_cache = None
 
 
+@app.get("/get_db")
+async def get_db():
+    if not kanji_cache:
+        return HTTPException(500, detail="no cache idk")
+    keys = kanji_cache.keys("*")
+    data = ""
+    for key in keys:  # type: ignore
+        data += f"{key}: {kanji_cache.get(key)}\n"
+    return data
+
+
 @app.post("/del_db")
 async def del_db(password):
     if not kanji_cache:
         return HTTPException(500, detail="no cache idk")
-    if password != os.getenv("DELETE_DATA_PASSWORD"):
+    if password != os.getenv("DB_PASSWORD"):
         return HTTPException(403, detail="incorrect password")
     print("Flushing the kanji database")
-    return await kanji_cache.flushdb()
+    return kanji_cache.flushdb()
 
 
 @app.post("/del_key")
 async def del_key(url, password):
     if not kanji_cache:
         return HTTPException(500, detail="no cache idk")
-    if password != os.getenv("DELETE_DATA_PASSWORD"):
+    if password != os.getenv("DB_PASSWORD"):
         return HTTPException(403, detail="incorrect password")
     print(f"Deleting key{url}")
-    return await kanji_cache.delete(url)
+    return kanji_cache.delete(url)
 
 
 @app.post("/kanji_ocr")
@@ -48,7 +59,6 @@ async def kanji_ocr(urls):
     requests_buffer = {}
 
     for i, url in enumerate(urls):
-        print(url)
         kanji_cached_result = kanji_cache.get(url)
         if kanji_cached_result:
             response_buffer.append(kanji_cached_result)
