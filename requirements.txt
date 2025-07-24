@@ -1,4 +1,6 @@
 fastapi
 redis
 uvicorn
+pydantic
 requests
+gemini-webapi

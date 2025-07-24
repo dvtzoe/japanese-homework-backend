@@ -1,25 +1,28 @@
 version: "3.8"
 
 services:
+  redis:
+    image: "redis:alpine"
+    container_name: redis-cache
+    volumes:
+      - redis_data:/data
+    restart: always
+
   backend:
-    build: ./backend
+    build: .
     container_name: backend-api
     ports:
       - "8000:8000"
     volumes:
       - ./backend:/app
+      - ./gemini_cookies:/usr/local/lib/python3.12/site-packages/gemini_webapi/utils/temp
+      - ./images:/app/images
+    environment:
+      REDIS_HOST: redis
     env_file:
-      - ./backend/.env
+      - .env
     depends_on:
       - redis
 
-  redis:
-    image: "redis:alpine"
-    container_name: redis-cache
-    command:
-      - "redis-server"
-      - "--save"
-      - ""
-      - "--appendonly"
-      - "no"
-    restart: always
+volumes:
+  redis_data:

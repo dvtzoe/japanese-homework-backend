@@ -1,118 +1,93 @@
-import enum
 import os
-import redis
-from fastapi import FastAPI, HTTPException
-import requests
-import json
+from contextlib import asynccontextmanager
 
-app = FastAPI(title="Caching Service with Vision API")
+import redis
+from define_types import *
+from fastapi import FastAPI
+from gemini_webapi import GeminiClient
+from problem_solver import PromblemSolver
+
+Secure_1PSID = os.getenv("SECURE_1PSID")
+Secure_1PSIDTS = os.getenv("SECURE_1PSIDTS")
+
+gemini_client = GeminiClient(Secure_1PSID, Secure_1PSIDTS, proxy=None)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print(Secure_1PSID, Secure_1PSIDTS)
+    await gemini_client.init(
+        timeout=30, auto_close=False, close_delay=300, auto_refresh=True
+    )
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 redis_host = os.getenv("REDIS_HOST", "localhost")
 try:
-    kanji_cache = redis.Redis(host=redis_host, port=6379, db=0, decode_responses=True)
-    kanji_cache.ping()
+    cache = redis.Redis(host=redis_host, port=6379, db=0, decode_responses=True)
+    cache.ping()
     print("Successfully connected to Redis.")
 except redis.ConnectionError as e:
     print(f"Could not connect to Redis: {e}")
-    kanji_cache = None
+    cache = None
 
 
 @app.get("/get_db")
 async def get_db():
-    if not kanji_cache:
-        return HTTPException(500, detail="no cache idk")
-    keys = kanji_cache.keys("*")
+    if not cache:
+        return Response(status=500, message="Redis service unavailable")
+    keys = cache.keys("*")
     data = ""
     for key in keys:  # type: ignore
-        data += f"{key}: {kanji_cache.get(key)}\n"
-    return data
+        data += f"{key}: {cache.get(key)}\n"
+    return Response(status=200, message=data)
 
 
 @app.post("/del_db")
 async def del_db(password):
-    if not kanji_cache:
-        return HTTPException(500, detail="no cache idk")
+    if not cache:
+        return Response(status=500, message="Redis service unavailable")
     if password != os.getenv("DB_PASSWORD"):
-        return HTTPException(403, detail="incorrect password")
-    print("Flushing the kanji database")
-    return kanji_cache.flushdb()
+        return Response(status=500, message="Incorrect password")
+    print("Flushing database 0")
+    try:
+        return Response(status=200 if cache.flushdb() else 500)
+    except Exception as e:
+        return Response(status=500, message=str(e))
 
 
 @app.post("/del_key")
-async def del_key(url, password):
-    if not kanji_cache:
-        return HTTPException(500, detail="no cache idk")
+async def del_key(key, password):
+    if not cache:
+        return Response(status=500, message="Redis service unavailable")
     if password != os.getenv("DB_PASSWORD"):
-        return HTTPException(403, detail="incorrect password")
-    print(f"Deleting key{url}")
-    return kanji_cache.delete(url)
+        return Response(status=500, message="Incorrect password")
+    print(f"Deleting key {key}")
+    try:
+        return Response(status=200 if cache.delete(key) else 500)
+    except Exception as e:
+        return Response(status=500, message=str(e))
 
 
-@app.post("/kanji_ocr")
-async def kanji_ocr(urls):
-    urls = json.loads(urls)
-
-    if not kanji_cache:
-        raise HTTPException(status_code=503, detail="Redis service unavailable")
-
-    response_buffer = []
-    requests_buffer = {}
-
-    for i, url in enumerate(urls):
-        kanji_cached_result = kanji_cache.get(url)
-        if kanji_cached_result:
-            response_buffer.append(kanji_cached_result)
-
-        else:
-            print(f"Adding {url} to the GCV queue")
-            try:
-                # response_buffer.append(await ocr_space(url))
-                response_buffer.append("")
-                requests_buffer[i] = {
-                    "image": {
-                        "source": {
-                            "imageUri": url,
-                        },
-                    },
-                    "features": {
-                        "type": "TEXT_DETECTION",
-                    },
-                    "imageContext": {"languageHints": ["ja"]},
-                }
-
-            except Exception as e:
-                raise HTTPException(
-                    status_code=500,
-                    detail=str(e),
-                )
-
-    if requests_buffer:
-        print(f"Sending the GCV queue to process")
-        try:
-            response = list(
-                map(
-                    lambda i: i["fullTextAnnotation"]["text"],
-                    requests.post(
-                        "https://vision.googleapis.com/v1/images:annotate",
-                        headers={
-                            "Authorization": f"Bearer {os.getenv('GCLOUD_IDENTITY_TOKEN')}"
-                        },
-                        data=json.dumps(
-                            {
-                                "requests": list(requests_buffer.values()),
-                            }
-                        ),
-                    ).json()["responses"],
-                ),
-            )
-        except Exception as e:
-            print(f"error: {e}")
-            response = None
-
-        if not response:
-            return response_buffer
-        for i, key in enumerate(requests_buffer.keys()):
-            response_buffer[key] = response[i]
-            kanji_cache.set(urls[key], response[i])
-    print(f"Operation Successful returning :\n{response_buffer}")
-    return response_buffer
+@app.post("/get_answers")
+async def get_answer(questions: Questions) -> Answer:
+    if not cache:
+        return Answer(status=500, message="Redis service unavailable", answers=[])
+    if not questions.questions:
+        return Answer(status=400, message="No questions provided", answers=[])
+    question_list = questions.questions
+    print(question_list)
+    problem_solver = PromblemSolver(
+        question_list, cache=cache, gemini_client=gemini_client
+    )
+    answers = await problem_solver.solve()
+    try:
+        response = Answer(status=200, answers=answers)
+        print(response)
+        return response
+    except Exception as e:
+        response = Answer(status=500, message=str(e), answers=[])
+        print(response)
+        return response
